@@ -1,89 +1,70 @@
-import paramiko
+from netmiko import ConnectHandler
+from typing import List
 import logging
-from typing import List, Optional
+
 
 class RouterConfigurator:
-    def __init__(self, ip: str, username: str, password: str):
+    def __init__(self, ip: str, username: str, password: str, secret: str):
         """
         Initialize RouterConfigurator with connection details.
-        
+
         :param ip: Router IP address
         :param username: SSH username
         :param password: SSH password
+        :param secret: Router enable secret
         """
-        self.ip = ip
-        self.username = username
-        self.password = password
-        
-        # Configure logging
+        self.device = {
+            'device_type': 'cisco_ios',
+            'host': ip,
+            'username': username,
+            'password': password,
+            'secret': secret,
+            'timeout': 100,
+        }
+
         logging.basicConfig(
-            level=logging.INFO, 
-            format='%(asctime)s - %(levelname)s: %(message)s',
-            filename='router_config.log'
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s: %(message)s",
+            filename="router_config.log",
         )
         self.logger = logging.getLogger(__name__)
-
-    def connect(self) -> Optional[paramiko.SSHClient]:
-        """
-        Establish SSH connection to the router.
-        
-        :return: SSHClient object or None if connection fails
-        """
-        try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(self.ip, username=self.username, password=self.password)
-            self.logger.info(f"Successfully connected to router at {self.ip}")
-            return ssh
-        except Exception as e:
-            self.logger.error(f"Connection failed: {e}")
-            return None
 
     def configure_router(self, commands: List[str]) -> bool:
         """
         Configure router with provided commands.
-        
+
         :param commands: List of configuration commands
         :return: Boolean indicating success or failure
         """
-        ssh = self.connect()
-        if not ssh:
-            return False
-
         try:
-            # Start interactive shell
-            remote_conn = ssh.invoke_shell()
-            remote_conn.send("terminal length 0\n")
-            
-            # Execute commands with logging
-            for cmd in commands:
-                remote_conn.send(cmd + "\n")
-                self.logger.info(f"Executing: {cmd}")
-                paramiko.invoke_shell.transport.recv_exit_status()
+            connection = ConnectHandler(**self.device)
+            self.logger.info(f"Connected to router at {self.device['host']}")
 
-            # Save running configuration
-            remote_conn.send("do write memory\n")
-            
-            # Retrieve and save configuration
-            remote_conn.send("show running-config\n")
-            output = remote_conn.recv(65535).decode('utf-8')
-            
-            with open("router_config_backup.txt", "w") as file:
-                file.write(output)
-            
-            self.logger.info("Router configuration completed successfully")
-            ssh.close()
+            # Enter enable mode
+            if not connection.check_enable_mode():
+                connection.enable()
+
+            # Send configuration commands
+            output = connection.send_config_set(commands)
+            self.logger.info(f"Commands executed:\n{output}")
+
+            # Save configuration
+            connection.save_config()
+            self.logger.info("Configuration saved successfully.")
+
+            # Disconnect
+            connection.disconnect()
             return True
 
         except Exception as e:
-            self.logger.error(f"Configuration error: {e}")
+            self.logger.error(f"Configuration failed: {e}")
             return False
 
     @staticmethod
     def get_default_commands() -> List[str]:
         """
         Provide default router configuration commands.
-        
+
         :return: List of default configuration commands
         """
         return [
@@ -103,15 +84,5 @@ class RouterConfigurator:
             "access-list 100 permit tcp any any eq 22",
             "access-list 100 deny ip any any",
             "ip access-group 100 in",
-            "do write memory"
+            "do write memory",
         ]
-
-# Example usage
-if __name__ == "__main__":
-    router = RouterConfigurator(
-        ip="192.168.2.1", 
-        username="admin", 
-        password="admin"
-    )
-    success = router.configure_router(router.get_default_commands())
-    print("Configuration successful" if success else "Configuration failed")
